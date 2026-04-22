@@ -92,6 +92,30 @@ def query_timeseries(source_id, minutes=15):
         print(f"[DASH] query_timeseries error: {e}")
         return pd.DataFrame()
 
+def query_zones(minutes=10):
+    """Kills totales agrupados por zona del mapa."""
+    q = f'''
+    from(bucket: "{INFLUX_BUCKET}")
+      |> range(start: -{minutes}m)
+      |> filter(fn: (r) => r._measurement == "gaming_events")
+      |> filter(fn: (r) => r._field == "kills")
+      |> group(columns: ["map_zone"])
+      |> sum()
+    '''
+    try:
+        tables = query_api.query(q)
+        rows = []
+        for table in tables:
+            for r in table.records:
+                rows.append({
+                    "map_zone": r.values.get("map_zone", "desconocida"),
+                    "kills":    r.get_value() or 0,
+                })
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    except Exception as e:
+        print(f"[DASH] query_zones error: {e}")
+        return pd.DataFrame()
+
 # ── Helpers de UI ─────────────────────────────────────────────
 def stat_card(label, value, color=GOLD):
     return html.Div(style={
@@ -203,7 +227,15 @@ app.layout = html.Div(style={"backgroundColor": BG_PAGE, "minHeight": "100vh",
             dcc.Graph(id="chart-timeseries", style={"height": "240px"},
                       config={"displayModeBar": False}),
         ]),
-
+# ── Fila 3: Kills por zona ───────────────────────────
+        html.Div(style={"background": BG_CARD, "border": BORDER,
+                        "borderRadius": "6px", "padding": "20px",
+                        "marginTop": "20px"}, children=[
+            section_title("Kills por zona del mapa"),
+            dcc.Graph(id="chart-zones", style={"height": "240px"},
+                      config={"displayModeBar": False}),
+        ]),
+        
         # ── Footer ───────────────────────────────────────────
         html.Div("Real-Time Data Pipeline · Docker · Kafka · InfluxDB · Plotly Dash",
                  style={"textAlign": "center", "color": TEXT_DIM, "fontSize": "11px",
@@ -221,6 +253,7 @@ app.layout = html.Div(style={"backgroundColor": BG_PAGE, "minHeight": "100vh",
     Output("chart-kills",   "figure"),
     Output("chart-bubble",  "figure"),
     Output("source-dropdown", "options"),
+    Output("chart-zones",     "figure"),
     Input("tick", "n_intervals"),
 )
 def update_charts(n):
@@ -275,7 +308,23 @@ def update_charts(n):
 
     options = [{"label": r["source_id"], "value": r["source_id"]}
                for _, r in df.iterrows()]
-    return cards, fig1, fig2, options
+    # Chart 3 — Kills por zona del mapa
+    df_zones = query_zones()
+    if df_zones.empty:
+        fig3 = go.Figure()
+        fig3.update_layout(**CHART_LAYOUT, title_text="Esperando datos...")
+    else:
+        fig3 = px.bar(
+            df_zones, x="map_zone", y="kills",
+            color="map_zone",
+            color_discrete_sequence=[GOLD, ACCENT, GREEN, ORANGE, "#9b59b6"],
+            labels={"map_zone": "Zona", "kills": "Kills totales"},
+            title="Actividad por zona del mapa",
+        )
+        fig3.update_layout(**CHART_LAYOUT, uirevision="chart3", showlegend=False)
+        fig3.update_traces(marker_line_width=0)
+
+    return cards, fig1, fig2, options, fig3
 
 @app.callback(
     Output("chart-timeseries", "figure"),
